@@ -1,0 +1,142 @@
+---
+- name: "building docker image from git repository"
+  hosts: build
+  become: true  
+  vars_files:
+    - dockerhub.vars
+  vars:
+    packages:
+      - git
+      - pip
+      - docker
+    project_repo_url: "https://github.com/josyvarghese1992/devops-flask.git"
+    clone_dir: "/var/flask_app"
+    image_name: "dockersanjos/flaskappz"
+  tasks:
+
+    - name: "Package Installation"
+      yum:
+        name: "{{ packages }}"
+        state: present
+
+    - name: "build -adding ec2-user to docker group"
+      user:
+        name: "ec2-user"
+        groups:
+          - docker
+        append: true
+
+    - name: "build- installing python extension for docker"
+      pip:
+        name: docker-py
+    
+    - name: "build -restarting or enabling docker service"
+      service:
+        name: docker
+        state: restarted
+        enabled: true
+
+    - name: "build -creating clone directory {{ clone_dir }}"
+      file:
+        path: "{{ clone_dir }}"
+        state: directory
+
+    - name: "build- clonning repo {{ project_repo_url }}"
+      git:
+        repo: "{{ project_repo_url }}"
+        dest: "{{ clone_dir }}"
+      register: clone_status
+
+    - name: "build -content of clone stauts"
+      debug:
+        var: clone_status
+
+    - name: "build - loging to docker-hub account"
+      when: clone_status.changed == true
+      docker_login:
+        username: "{{ docker_user }}"
+        password: "{{ docker_password }}"
+        state: present
+
+    - name: "build creating docker image and push to docker-hub"
+      when: clone_status.changed == true
+      docker_image:
+        source: build
+        build:
+          path: "{{ clone_dir }}"
+          pull: yes
+        name: "{{ image_name }}"
+        tag: "{{ item }}"      
+        push: true
+        force_tag: yes
+        force_source: yes
+      with_items:
+        - "{{ clone_status.after }}"
+        - latest
+
+    - name: "build deleting local image from build server"
+      when: clone_status.changed == true
+      docker_image:
+        state: absent
+        name: "{{ image_name }}"
+        tag: "{{ item }}"
+      with_items:
+        - "{{ clone_status.after }}"
+        - latest
+
+    - name: "build - logout from docker-hub account"
+      when: clone_status.changed == true
+      docker_login:
+        username: "{{ docker_user }}"
+        password: "{{ docker_password }}"
+        state: absent
+  
+
+- name: "running image on the test server"
+  hosts: test
+  become: true
+  vars:
+    image_name: "dockersanjos/flaskappz" 
+    packages:
+      - docker
+      - pip
+  tasks:
+
+    - name: "test - installing packages"
+      yum:
+        name: "{{ packages }}"
+        state: present
+
+    - name: "test - adding ec2-user to docker group"
+      user:
+        name: "ec2-user"
+        groups:
+          - docker
+        append: true
+
+    - name: "test - install python extension for docker"
+      pip:
+        name: docker-py
+
+    - name: "test -docker service restart or enable"
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: "test - pulling docker image"
+      docker_image:
+        name: "{{ image_name }}"
+        source: pull
+        force_source: true
+      register: image_status
+
+    - name: "test - run container"
+      when: image_status.changed == true
+      docker_container:
+        name: flaskapp
+        image: "{{ image_name }}:latest"
+        recreate: yes
+        pull: yes
+        published_ports:
+          - "80:5000"      
